@@ -4,7 +4,7 @@ const React = require('react');
 const PropTypes = require('prop-types');
 const classnames = require('classnames');
 const { useTranslation } = require('react-i18next');
-const { usePlatform, useToast } = require('stremio/common');
+const { usePlatform, useToast, copyToClipboard } = require('stremio/common');
 const { useServices } = require('stremio/services');
 const Option = require('./Option');
 const styles = require('./styles');
@@ -37,7 +37,7 @@ const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDe
 
     const onCopyStreamButtonClick = React.useCallback(() => {
         if (streamingUrl || downloadUrl) {
-            navigator.clipboard.writeText(streamingUrl || downloadUrl)
+            copyToClipboard(streamingUrl || downloadUrl)
                 .then(() => {
                     toast.show({
                         type: 'success',
@@ -59,7 +59,7 @@ const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDe
     }, [streamingUrl, downloadUrl]);
     const onCopyMagnetButtonClick = React.useCallback(() => {
         if (magnetUrl) {
-            navigator.clipboard.writeText(magnetUrl)
+            copyToClipboard(magnetUrl)
                 .then(() => {
                     toast.show({
                         type: 'success',

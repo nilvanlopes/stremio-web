@@ -6,6 +6,7 @@ const { ToastProvider, useToast } = require('./Toast');
 const { TooltipProvider, Tooltip } = require('./Tooltips');
 const { ShortcutsProvider, useShortcuts, onShortcut } = require('./Shortcuts');
 const CONSTANTS = require('./CONSTANTS');
+const copyToClipboard = require('./copyToClipboard');
 const { withCoreSuspender, useCoreSuspender } = require('./CoreSuspender');
 const getVisibleChildrenRange = require('./getVisibleChildrenRange');
 const interfaceLanguages = require('./interfaceLanguages.json');
@@ -44,6 +45,7 @@ module.exports = {
     TooltipProvider,
     Tooltip,
     CONSTANTS,
+    copyToClipboard,
     withCoreSuspender,
     useCoreSuspender,
     getVisibleChildrenRange,

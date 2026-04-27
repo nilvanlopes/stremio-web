@@ -5,7 +5,7 @@ const PropTypes = require('prop-types');
 const classnames = require('classnames');
 const { default: Icon } = require('@stremio/stremio-icons/react');
 const { t } = require('i18next');
-const { useProfile, usePlatform, useToast, useBinaryState } = require('stremio/common');
+const { useProfile, usePlatform, useToast, useBinaryState, copyToClipboard } = require('stremio/common');
 const { Button, Image, Popup } = require('stremio/components');
 const { useServices } = require('stremio/services');
 const { useRouteFocused } = require('stremio-router');
@@ -132,7 +132,7 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
         event.preventDefault();
         closeMenu();
         if (magnetLink) {
-            navigator.clipboard.writeText(magnetLink)
+            copyToClipboard(magnetLink)
                 .then(() => {
                     toast.show({
                         type: 'success',
@@ -140,21 +140,23 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
                         timeout: 4000
                     });
                 })
-                .catch(() => {
+                .catch((error) => {
+                    console.error(error);
                     toast.show({
                         type: 'error',
                         title: t('PLAYER_COPY_MAGNET_LINK_ERROR'),
+                        message: magnetLink,
                         timeout: 4000,
                     });
                 });
         }
-    }, [magnetLink]);
+    }, [closeMenu, magnetLink, toast]);
 
     const copyDownloadLink = React.useCallback((event) => {
         event.preventDefault();
         closeMenu();
         if (downloadLink) {
-            navigator.clipboard.writeText(downloadLink)
+            copyToClipboard(downloadLink)
                 .then(() => {
                     toast.show({
                         type: 'success',
@@ -162,21 +164,23 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
                         timeout: 4000
                     });
                 })
-                .catch(() => {
+                .catch((error) => {
+                    console.error(error);
                     toast.show({
                         type: 'error',
                         title: t('PLAYER_COPY_DOWNLOAD_LINK_ERROR'),
+                        message: downloadLink,
                         timeout: 4000,
                     });
                 });
         }
-    }, [downloadLink]);
+    }, [closeMenu, downloadLink, toast]);
 
     const copyStreamLink = React.useCallback((event) => {
         event.preventDefault();
         closeMenu();
         if (streamLink) {
-            navigator.clipboard.writeText(streamLink)
+            copyToClipboard(streamLink)
                 .then(() => {
                     toast.show({
                         type: 'success',
@@ -184,15 +188,17 @@ const Stream = ({ className, videoId, videoReleased, addonName, name, descriptio
                         timeout: 4000
                     });
                 })
-                .catch(() => {
+                .catch((error) => {
+                    console.error(error);
                     toast.show({
                         type: 'error',
                         title: t('PLAYER_COPY_STREAM_ERROR'),
+                        message: streamLink,
                         timeout: 4000,
                     });
                 });
         }
-    }, [streamLink]);
+    }, [closeMenu, streamLink, toast]);
 
     const renderThumbnailFallback = React.useCallback(() => (
         <Icon className={styles['placeholder-icon']} name={'ic_broken_link'} />
