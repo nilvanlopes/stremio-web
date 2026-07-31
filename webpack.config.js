@@ -12,7 +12,13 @@ const CopyWebpackPlugin = require('copy-webpack-plugin');
 const TerserPlugin = require('terser-webpack-plugin');
 const packageJson = require('./package.json');
 
-const COMMIT_HASH = execSync('git rev-parse HEAD').toString().trim();
+const COMMIT_HASH = process.env.COMMIT_HASH || (() => {
+    try {
+        return execSync('git rev-parse HEAD').toString().trim();
+    } catch {
+        return 'local';
+    }
+})();
 
 const THREAD_LOADER = {
     loader: 'thread-loader',
