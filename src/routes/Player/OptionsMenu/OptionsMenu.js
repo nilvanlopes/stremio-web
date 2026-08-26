@@ -4,27 +4,26 @@ const React = require('react');
 const PropTypes = require('prop-types');
 const classnames = require('classnames');
 const { useTranslation } = require('react-i18next');
-const { usePlatform, useToast, copyToClipboard } = require('stremio/common');
-const { useServices } = require('stremio/services');
+const { usePlatform, useToast } = require('stremio/common');
+const { default: usePlayOnDevice } = require('../usePlayOnDevice');
 const Option = require('./Option');
 const styles = require('./styles');
 
 const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDevices, extraSubtitlesTracks, selectedExtraSubtitlesTrackId }, ref) => {
     const { t } = useTranslation();
-    const { core } = useServices();
     const platform = usePlatform();
     const toast = useToast();
-    const [streamingUrl, downloadUrl, magnetUrl] = React.useMemo(() => {
+    const { streamingUrl, playOnDevice } = usePlayOnDevice(stream);
+    const [downloadUrl, magnetUrl] = React.useMemo(() => {
         return stream !== null ?
             stream.deepLinks &&
             stream.deepLinks.externalPlayer &&
             [
-                stream.deepLinks.externalPlayer.streaming,
                 stream.deepLinks.externalPlayer.download,
                 stream.deepLinks.externalPlayer.magnet,
             ]
             :
-            [null, null, null];
+            [null, null];
     }, [stream]);
     const externalDevices = React.useMemo(() => {
         return playbackDevices.filter(({ type }) => type === 'external');
@@ -37,7 +36,7 @@ const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDe
 
     const onCopyStreamButtonClick = React.useCallback(() => {
         if (streamingUrl || downloadUrl) {
-            copyToClipboard(streamingUrl || downloadUrl)
+            navigator.clipboard.writeText(streamingUrl || downloadUrl)
                 .then(() => {
                     toast.show({
                         type: 'success',
@@ -59,7 +58,7 @@ const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDe
     }, [streamingUrl, downloadUrl]);
     const onCopyMagnetButtonClick = React.useCallback(() => {
         if (magnetUrl) {
-            copyToClipboard(magnetUrl)
+            navigator.clipboard.writeText(magnetUrl)
                 .then(() => {
                     toast.show({
                         type: 'success',
@@ -89,20 +88,6 @@ const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDe
         subtitlesTrackUrl && platform.openExternal(subtitlesTrackUrl);
     }, [subtitlesTrackUrl]);
 
-    const onExternalDeviceRequested = React.useCallback((deviceId) => {
-        if (streamingUrl) {
-            core.transport.dispatch({
-                action: 'StreamingServer',
-                args: {
-                    action: 'PlayOnDevice',
-                    args: {
-                        device: deviceId,
-                        source: streamingUrl,
-                    }
-                }
-            });
-        }
-    }, [streamingUrl]);
     const onMouseDown = React.useCallback((event) => {
         event.nativeEvent.optionsMenuClosePrevented = true;
     }, []);
@@ -161,7 +146,7 @@ const OptionsMenu = React.memo(React.forwardRef(({ className, stream, playbackDe
                         label={t('PLAYER_PLAY_IN', { device: name })}
                         deviceId={id}
                         disabled={stream === null}
-                        onClick={onExternalDeviceRequested}
+                        onClick={playOnDevice}
                     />
                 ))
             }

@@ -1,12 +1,14 @@
 // Copyright (C) 2017-2023 Smart code 203358507
 
 const React = require('react');
+const { useNavigate } = require('react-router');
+const { default: toPath } = require('stremio-router/toPath');
 const PropTypes = require('prop-types');
 const classnames = require('classnames');
 const { useTranslation } = require('react-i18next');
 const { default: Icon } = require('@stremio/stremio-icons/react');
 const { Button, Image, MultiselectMenu } = require('stremio/components');
-const { useServices } = require('stremio/services');
+const { useCore } = require('stremio/core');
 const Stream = require('./Stream');
 const styles = require('./styles');
 const { usePlatform, useProfile } = require('stremio/common');
@@ -16,9 +18,10 @@ const ALL_ADDONS_KEY = 'ALL';
 
 const StreamsList = ({ className, video, type, onEpisodeSearch, ...props }) => {
     const { t } = useTranslation();
-    const { core } = useServices();
+    const core = useCore();
     const platform = usePlatform();
     const profile = useProfile();
+    const navigate = useNavigate();
     const streamsContainerRef = React.useRef(null);
     const [selectedAddon, setSelectedAddon] = React.useState(ALL_ADDONS_KEY);
     const onAddonSelected = React.useCallback((value) => {
@@ -30,14 +33,13 @@ const StreamsList = ({ className, video, type, onEpisodeSearch, ...props }) => {
     }, [profile, video]);
     const backButtonOnClick = React.useCallback(() => {
         if (video.deepLinks && typeof video.deepLinks.metaDetailsVideos === 'string') {
-            window.location.replace(video.deepLinks.metaDetailsVideos + (
-                typeof video.season === 'number' ?
-                    `?${new URLSearchParams({ 'season': video.season })}`
-                    :
-                    null
-            ));
+            const navigateTo = `${video.deepLinks.metaDetailsVideos}${
+                typeof video.season === 'number'
+                    ? `?${new URLSearchParams({ 'season': video.season })}`
+                    : ''}`;
+            navigate(toPath(navigateTo), { replace: true });
         } else {
-            window.history.back();
+            navigate(-1);
         }
     }, [video]);
     const countLoadingAddons = React.useMemo(() => {
@@ -104,7 +106,7 @@ const StreamsList = ({ className, video, type, onEpisodeSearch, ...props }) => {
                 {
                     video ?
                         <React.Fragment>
-                            <Button className={classnames(styles['button-container'], styles['back-button-container'])} tabIndex={-1} onClick={backButtonOnClick}>
+                            <Button className={classnames(styles['button-container'], styles['back-button-container'])} tabIndex={0} onClick={backButtonOnClick}>
                                 <Icon className={styles['icon']} name={'chevron-back'} />
                             </Button>
                             <div className={styles['episode-title']}>

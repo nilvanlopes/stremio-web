@@ -1,30 +1,38 @@
 // Copyright (C) 2017-2023 Smart code 203358507
 
 const React = require('react');
-const PropTypes = require('prop-types');
+const { useParams, useNavigate } = require('react-router');
+const { useSearchParams } = require('react-router-dom');
 const classnames = require('classnames');
 const debounce = require('lodash.debounce');
 const langs = require('langs');
 const { useTranslation } = require('react-i18next');
-const { useRouteFocused } = require('stremio-router');
-const { useServices } = require('stremio/services');
-const { onFileDrop, useSettings, useProfile, useFullscreen, useBinaryState, useToast, useStreamingServer, withCoreSuspender, CONSTANTS, useShell, usePlatform, onShortcut } = require('stremio/common');
+const { default: useRouteFocused } = require('stremio/common/useRouteFocused');
+const { useCore } = require('stremio/core');
+const { useServices, useGamepad } = require('stremio/services');
+const { useContentGamepadNavigation } = require('stremio/services/GamepadNavigation');
+const { useSettings, useProfile, useFullscreen, useBinaryState, useToast, useStreamingServer, withCoreSuspender, usePlatform, onShortcut, getKeyboardShortcutKey, getKeyboardShortcutKeys, useDiscord, EMPTY_DISCORD_TIMESTAMPS, getPlaybackDiscordActivity } = require('stremio/common');
+const { default: toPath } = require('stremio-router/toPath');
 const { HorizontalNavBar, Transition, ContextMenu } = require('stremio/components');
-const BufferingLoader = require('./BufferingLoader');
+const { default: Buffering } = require('./Buffering');
 const VolumeChangeIndicator = require('./VolumeChangeIndicator');
 const Error = require('./Error');
 const ControlBar = require('./ControlBar');
 const NextVideoPopup = require('./NextVideoPopup');
 const StatisticsMenu = require('./StatisticsMenu');
 const OptionsMenu = require('./OptionsMenu');
+const { default: CastDevicesMenu } = require('./CastDevicesMenu');
 const SubtitlesMenu = require('./SubtitlesMenu');
 const { default: AudioMenu } = require('./AudioMenu');
 const SpeedMenu = require('./SpeedMenu');
 const { default: SideDrawerButton } = require('./SideDrawerButton');
 const { default: SideDrawer } = require('./SideDrawer');
 const usePlayer = require('./usePlayer');
-const useStatistics = require('./useStatistics');
+const { default: usePlayOnDevice } = require('./usePlayOnDevice');
+const { default: useKeyboardSeek } = require('./useKeyboardSeek');
+const { default: useStatistics } = require('./useStatistics');
 const useVideo = require('./useVideo');
+const { default: useSubtitles } = require('./useSubtitles');
 const styles = require('./styles');
 const Video = require('./Video');
 const { default: Indicator } = require('./Indicator/Indicator');
@@ -33,15 +41,31 @@ const { default: useMediaSession } = require('./useMediaSession');
 const findTrackByLang = (tracks, lang) => tracks.find((track) => track.lang === lang || langs.where('1', track.lang)?.[2] === lang);
 const findTrackById = (tracks, id) => tracks.find((track) => track.id === id);
 
-const Player = ({ urlParams, queryParams }) => {
+const GAMEPAD_HANDLER_ID = 'player';
+
+const CAST_DEVICES_REFRESH_INTERVAL = 5000;
+
+const Player = () => {
+    const { stream, streamTransportUrl, metaTransportUrl, type, id, videoId } = useParams();
+    const urlParams = React.useMemo(() => ({
+        stream,
+        streamTransportUrl,
+        metaTransportUrl,
+        type,
+        id,
+        videoId
+    }), [stream, streamTransportUrl, metaTransportUrl, type, id, videoId]);
+    const [queryParams] = useSearchParams();
+    const navigate = useNavigate();
     const { t } = useTranslation();
     const services = useServices();
-    const shell = useShell();
+    const core = useCore();
+    const gamepad = useGamepad();
     const forceTranscoding = React.useMemo(() => {
         return queryParams.has('forceTranscoding');
     }, [queryParams]);
     const profile = useProfile();
-    const [player, videoParamsChanged, streamStateChanged, timeChanged, seek, pausedChanged, ended, nextVideo] = usePlayer(urlParams);
+    const [player, videoParamsChanged, streamStateChanged, subtitlePreferenceChanged, timeChanged, seek, pausedChanged, ended, nextVideo] = usePlayer(urlParams);
     const [settings] = useSettings();
     const streamingServer = useStreamingServer();
     const statistics = useStatistics(player, streamingServer);
@@ -49,6 +73,8 @@ const Player = ({ urlParams, queryParams }) => {
     const routeFocused = useRouteFocused();
     const platform = usePlatform();
     const toast = useToast();
+    const discord = useDiscord();
+    const discordTimestamps = React.useRef(EMPTY_DISCORD_TIMESTAMPS);
 
     const [seeking, setSeeking] = React.useState(false);
 
@@ -57,24 +83,32 @@ const Player = ({ urlParams, queryParams }) => {
     });
     const playbackDevices = React.useMemo(() => streamingServer.playbackDevices !== null && streamingServer.playbackDevices.type === 'Ready' ? streamingServer.playbackDevices.content : [], [streamingServer]);
 
+    const playerRef = React.useRef(null);
     const bufferingRef = React.useRef();
     const errorRef = React.useRef();
 
     const [immersed, setImmersed] = React.useState(true);
     const setImmersedDebounced = React.useCallback(debounce(setImmersed, 3000), []);
-    const [, , , toggleFullscreen] = useFullscreen();
+    const [fullscreen, , , toggleFullscreen, , setVideoElement] = useFullscreen();
+
+    React.useEffect(() => {
+        const el = video.containerRef.current?.querySelector('video');
+        setVideoElement(el || null);
+        return () => setVideoElement(null);
+    }, [video.state.manifest]);
 
     const [optionsMenuOpen, , closeOptionsMenu, toggleOptionsMenu] = useBinaryState(false);
     const [subtitlesMenuOpen, , closeSubtitlesMenu, toggleSubtitlesMenu] = useBinaryState(false);
     const [audioMenuOpen, , closeAudioMenu, toggleAudioMenu] = useBinaryState(false);
     const [speedMenuOpen, , closeSpeedMenu, toggleSpeedMenu] = useBinaryState(false);
-    const [statisticsMenuOpen, , closeStatisticsMenu, toggleStatisticsMenu] = useBinaryState(false);
+    const [statisticsMenuOpen, openStatisticsMenu, closeStatisticsMenu, toggleStatisticsMenu] = useBinaryState(false);
+    const [castDevicesMenuOpen, , closeCastDevicesMenu, toggleCastDevicesMenu] = useBinaryState(false);
     const [nextVideoPopupOpen, openNextVideoPopup, closeNextVideoPopup] = useBinaryState(false);
     const [sideDrawerOpen, , closeSideDrawer, toggleSideDrawer] = useBinaryState(false);
 
     const menusOpen = React.useMemo(() => {
-        return optionsMenuOpen || subtitlesMenuOpen || audioMenuOpen || speedMenuOpen || statisticsMenuOpen || sideDrawerOpen || nextVideoPopupOpen;
-    }, [optionsMenuOpen, subtitlesMenuOpen, audioMenuOpen, speedMenuOpen, statisticsMenuOpen, sideDrawerOpen, nextVideoPopupOpen]);
+        return optionsMenuOpen || subtitlesMenuOpen || audioMenuOpen || speedMenuOpen || statisticsMenuOpen || castDevicesMenuOpen || sideDrawerOpen || nextVideoPopupOpen;
+    }, [optionsMenuOpen, subtitlesMenuOpen, audioMenuOpen, speedMenuOpen, statisticsMenuOpen, castDevicesMenuOpen, sideDrawerOpen, nextVideoPopupOpen]);
 
     const closeMenus = React.useCallback(() => {
         closeOptionsMenu();
@@ -82,21 +116,69 @@ const Player = ({ urlParams, queryParams }) => {
         closeAudioMenu();
         closeSpeedMenu();
         closeStatisticsMenu();
+        closeCastDevicesMenu();
         closeSideDrawer();
     }, []);
 
-    const overlayHidden = React.useMemo(() => {
-        return immersed && !casting && video.state.paused !== null && !video.state.paused && !menusOpen;
-    }, [immersed, casting, video.state.paused, menusOpen]);
+    const castDevices = React.useMemo(() => {
+        return playbackDevices
+            .filter(({ type }) => type === 'chromecast' || type === 'tv')
+            .sort((a, b) => a.type === b.type ? 0 : a.type === 'chromecast' ? -1 : 1);
+    }, [playbackDevices]);
+    const [castDevicesSearching, setCastDevicesSearching] = React.useState(false);
+    const castDevicesLoading = platform.shell.active && (castDevicesSearching || (streamingServer.playbackDevices !== null && streamingServer.playbackDevices.type === 'Loading'));
+    const { streamingUrl: castStreamingUrl, playOnDevice } = usePlayOnDevice(player.selected?.stream ?? null);
+    const shellCastSupported = platform.shell.active && castStreamingUrl !== null;
+    const refreshCastDevices = React.useCallback(() => {
+        if (platform.shell.active) {
+            core.transport.dispatch({
+                action: 'StreamingServer',
+                args: {
+                    action: 'RefreshPlaybackDevices',
+                }
+            });
+        }
+    }, [platform.shell.active]);
+    const onCastDeviceSelected = React.useCallback((deviceId) => {
+        playOnDevice(deviceId, video.state.time);
+        closeCastDevicesMenu();
+    }, [playOnDevice, video.state.time]);
+    React.useEffect(() => {
+        if (castDevicesMenuOpen && platform.shell.active) {
+            setCastDevicesSearching(true);
+            refreshCastDevices();
+            const interval = setInterval(refreshCastDevices, CAST_DEVICES_REFRESH_INTERVAL);
+            const timeout = setTimeout(() => setCastDevicesSearching(false), CAST_DEVICES_REFRESH_INTERVAL);
+            return () => {
+                clearInterval(interval);
+                clearTimeout(timeout);
+                setCastDevicesSearching(false);
+            };
+        }
+    }, [castDevicesMenuOpen, refreshCastDevices]);
+
+    const {
+        streamSubtitles,
+        allSubtitleTracks,
+        extraSubtitleTracks,
+        selectedExtraSubtitleTrackId,
+        subtitlesMenuProps,
+    } = useSubtitles({
+        player,
+        video,
+        settings,
+        streamStateChanged,
+        subtitlePreferenceChanged,
+        menusOpen,
+        closeMenus,
+        closeSubtitlesMenu,
+        toggleSubtitlesMenu,
+    });
 
     const nextVideoPopupDismissed = React.useRef(false);
-    const defaultSubtitlesSelected = React.useRef(false);
-    const lastSubtitleTrack = React.useRef(null);
     const defaultAudioTrackSelected = React.useRef(false);
     const playingOnExternalDevice = React.useRef(false);
     const [error, setError] = React.useState(null);
-
-    const isNavigating = React.useRef(false);
 
     const VIDEO_SCALES = ['contain', 'cover', 'fill'];
     const VIDEO_SCALE_LABELS = { contain: t('PLAYER_SCALE_FIT'), cover: t('PLAYER_SCALE_CROP'), fill: t('PLAYER_SCALE_STRETCH') };
@@ -104,60 +186,43 @@ const Player = ({ urlParams, queryParams }) => {
     const playbackSpeed = React.useRef(video.state.playbackSpeed || 1);
     const pressTimer = React.useRef(null);
     const longPress = React.useRef(false);
+    const detailsHold = React.useRef(null);
     const controlBarRef = React.useRef(null);
 
-    const HOLD_DELAY = 200;
-
-    const onImplementationChanged = React.useCallback(() => {
-        video.setSubtitlesSize(settings.subtitlesSize);
-        video.setSubtitlesOffset(settings.subtitlesOffset);
-        video.setSubtitlesTextColor(settings.subtitlesTextColor);
-        video.setSubtitlesBackgroundColor(settings.subtitlesBackgroundColor);
-        video.setSubtitlesOutlineColor(settings.subtitlesOutlineColor);
-    }, [settings]);
+    const HOLD_DELAY = 400;
 
     const handleNextVideoNavigation = React.useCallback((deepLinks, bingeWatching, ended) => {
         if (ended) {
             if (bingeWatching) {
                 if (deepLinks.player) {
-                    isNavigating.current = true;
-                    window.location.replace(deepLinks.player);
+                    navigate(toPath(deepLinks.player), { replace: true });
                 } else if (deepLinks.metaDetailsStreams) {
-                    isNavigating.current = true;
-                    window.location.replace(deepLinks.metaDetailsStreams);
+                    navigate(toPath(deepLinks.metaDetailsStreams), { replace: true });
                 }
             } else {
-                window.history.back();
+                navigate(-1);
             }
+
         } else {
             if (deepLinks.player) {
-                isNavigating.current = true;
-                window.location.replace(deepLinks.player);
+                navigate(toPath(deepLinks.player), { replace: true });
             } else if (deepLinks.metaDetailsStreams) {
-                isNavigating.current = true;
-                window.location.replace(deepLinks.metaDetailsStreams);
+                navigate(toPath(deepLinks.metaDetailsStreams), { replace: true });
             }
         }
     }, []);
 
     const onEnded = React.useCallback(() => {
-        // here we need to explicitly check for isNavigating.current
-        // the ended event can be called multiple times by MPV inside Shell
-        if (isNavigating.current) {
-            return;
-        }
-
         ended();
-        if (window.playerNextVideo !== null) {
+        if (player.nextVideo !== null) {
             nextVideo();
 
-            const deepLinks = window.playerNextVideo.deepLinks;
+            const deepLinks = player.nextVideo.deepLinks;
             handleNextVideoNavigation(deepLinks, profile.settings.bingeWatching, true);
-
         } else {
-            window.history.back();
+            navigate(-1);
         }
-    }, []);
+    }, [player.nextVideo, profile.settings.bingeWatching, handleNextVideoNavigation]);
 
     const onError = React.useCallback((error) => {
         console.error('Player', error);
@@ -170,33 +235,6 @@ const Player = ({ urlParams, queryParams }) => {
                 message: error.message,
                 timeout: 3000
             });
-        }
-    }, []);
-
-    const onSubtitlesTrackLoaded = React.useCallback(() => {
-        toast.show({
-            type: 'success',
-            title: t('PLAYER_SUBTITLES_LOADED'),
-            message: t('PLAYER_SUBTITLES_LOADED_EMBEDDED'),
-            timeout: 3000
-        });
-    }, []);
-
-    const onExtraSubtitlesTrackLoaded = React.useCallback((track) => {
-        toast.show({
-            type: 'success',
-            title: t('PLAYER_SUBTITLES_LOADED'),
-            message:
-                track.exclusive ? t('PLAYER_SUBTITLES_LOADED_EXCLUSIVE') :
-                    track.local ? t('PLAYER_SUBTITLES_LOADED_LOCAL') :
-                        t('PLAYER_SUBTITLES_LOADED_ORIGIN', { origin: track.origin }),
-            timeout: 3000
-        });
-    }, []);
-
-    const onExtraSubtitlesTrackAdded = React.useCallback((track) => {
-        if (track.local) {
-            video.setExtraSubtitlesTrack(track.id);
         }
     }, []);
 
@@ -225,10 +263,62 @@ const Player = ({ urlParams, queryParams }) => {
         video.setVolume(volume);
     }, []);
 
-    const onSeekRequested = React.useCallback((time) => {
+    const commitSeek = React.useCallback((time) => {
         video.setTime(time);
         seek(time, video.state.duration, video.state.manifest?.name);
     }, [video.state.duration, video.state.manifest]);
+    const {
+        time: keyboardSeekTime,
+        seekBy: seekByKeyboard,
+        seekTo: onSeekRequested,
+        cancel: cancelKeyboardSeek,
+        flush: flushKeyboardSeek,
+        release: releaseKeyboardSeek,
+    } = useKeyboardSeek({
+        time: video.state.time,
+        duration: video.state.duration,
+        onSeek: commitSeek,
+        setSeeking,
+    });
+    const onKeyboardSeekRequested = React.useCallback((offset) => {
+        setImmersedDebounced.cancel();
+        setImmersed(false);
+        seekByKeyboard(offset);
+    }, [seekByKeyboard]);
+    const overlayHidden = React.useMemo(() => {
+        return keyboardSeekTime === null && immersed && !casting && video.state.paused !== null && !video.state.paused && !menusOpen;
+    }, [keyboardSeekTime, immersed, casting, video.state.paused, menusOpen]);
+
+    React.useEffect(() => {
+        if (!video.state.manifest?.props.includes('subtitlesOffsetMinimum')) {
+            return;
+        }
+
+        const videoContainerElement = video.containerRef.current;
+        const controlBarElement = controlBarRef.current;
+        if (!videoContainerElement || !controlBarElement) {
+            return;
+        }
+
+        const updateSubtitlesOffsetMinimum = () => {
+            const videoHeight = videoContainerElement.getBoundingClientRect().height;
+            const controlBarHeight = overlayHidden ? 0 : controlBarElement.getBoundingClientRect().height;
+            const offsetMinimum = videoHeight > 0 ? Math.ceil(controlBarHeight / videoHeight * 100) : 0;
+            video.setSubtitlesOffsetMinimum(offsetMinimum);
+        };
+
+        updateSubtitlesOffsetMinimum();
+
+        if (typeof ResizeObserver === 'undefined') {
+            window.addEventListener('resize', updateSubtitlesOffsetMinimum);
+            return () => window.removeEventListener('resize', updateSubtitlesOffsetMinimum);
+        }
+
+        const resizeObserver = new ResizeObserver(updateSubtitlesOffsetMinimum);
+        resizeObserver.observe(videoContainerElement);
+        resizeObserver.observe(controlBarElement);
+        return () => resizeObserver.disconnect();
+    }, [overlayHidden, video.state.manifest, video.setSubtitlesOffsetMinimum]);
 
     const onPlaybackSpeedChanged = React.useCallback((rate, skipUpdate) => {
         video.setPlaybackSpeed(rate);
@@ -246,28 +336,6 @@ const Player = ({ urlParams, queryParams }) => {
         video.setVideoScale(nextScale);
     }, [video.state.videoScale]);
 
-    const onSubtitlesTrackSelected = React.useCallback((track) => {
-        defaultSubtitlesSelected.current = true;
-        video.setSubtitlesTrack(track?.id ?? null);
-        if (track) {
-            lastSubtitleTrack.current = { id: track.id, embedded: true };
-        }
-        streamStateChanged({
-            subtitleTrack: track ? { id: track.id, embedded: true, lang: track.lang } : null,
-        });
-    }, [streamStateChanged]);
-
-    const onExtraSubtitlesTrackSelected = React.useCallback((track) => {
-        defaultSubtitlesSelected.current = true;
-        video.setExtraSubtitlesTrack(track?.id ?? null);
-        if (track) {
-            lastSubtitleTrack.current = { id: track.id, embedded: false };
-        }
-        streamStateChanged({
-            subtitleTrack: track ? { id: track.id, embedded: false, lang: track.lang } : null,
-        });
-    }, [streamStateChanged]);
-
     const onAudioTrackSelected = React.useCallback((id) => {
         video.setAudioTrack(id);
         streamStateChanged({
@@ -277,37 +345,6 @@ const Player = ({ urlParams, queryParams }) => {
         });
     }, [streamStateChanged]);
 
-    const onExtraSubtitlesDelayChanged = React.useCallback((delay) => {
-        video.setSubtitlesDelay(delay);
-        streamStateChanged({ subtitleDelay: delay });
-    }, [streamStateChanged]);
-
-    const onIncreaseSubtitlesDelay = React.useCallback(() => {
-        const delay = video.state.extraSubtitlesDelay + 250;
-        onExtraSubtitlesDelayChanged(delay);
-    }, [video.state.extraSubtitlesDelay, onExtraSubtitlesDelayChanged]);
-
-    const onDecreaseSubtitlesDelay = React.useCallback(() => {
-        const delay = video.state.extraSubtitlesDelay - 250;
-        onExtraSubtitlesDelayChanged(delay);
-    }, [video.state.extraSubtitlesDelay, onExtraSubtitlesDelayChanged]);
-
-    const onSubtitlesSizeChanged = React.useCallback((size) => {
-        video.setSubtitlesSize(size);
-        streamStateChanged({ subtitleSize: size });
-    }, [streamStateChanged]);
-
-    const onUpdateSubtitlesSize = React.useCallback((delta) => {
-        const sizeIndex = CONSTANTS.SUBTITLES_SIZES.indexOf(video.state.subtitlesSize);
-        const size = CONSTANTS.SUBTITLES_SIZES[Math.max(0, Math.min(CONSTANTS.SUBTITLES_SIZES.length - 1, sizeIndex + delta))];
-        onSubtitlesSizeChanged(size);
-    }, [video.state.subtitlesSize, onSubtitlesSizeChanged]);
-
-    const onSubtitlesOffsetChanged = React.useCallback((offset) => {
-        video.setSubtitlesOffset(offset);
-        streamStateChanged({ subtitleOffset: offset });
-    }, [streamStateChanged]);
-
     const onDismissNextVideoPopup = React.useCallback(() => {
         closeNextVideoPopup();
         nextVideoPopupDismissed.current = true;
@@ -315,12 +352,13 @@ const Player = ({ urlParams, queryParams }) => {
 
     const onNextVideoRequested = React.useCallback(() => {
         if (player.nextVideo !== null) {
+            cancelKeyboardSeek();
             nextVideo();
 
             const deepLinks = player.nextVideo.deepLinks;
             handleNextVideoNavigation(deepLinks, profile.settings.bingeWatching, false);
         }
-    }, [player.nextVideo, handleNextVideoNavigation, profile.settings]);
+    }, [player.nextVideo, handleNextVideoNavigation, profile.settings, cancelKeyboardSeek]);
 
     const onVideoClick = React.useCallback(() => {
         if (video.state.paused !== null && !longPress.current) {
@@ -354,6 +392,9 @@ const Player = ({ urlParams, queryParams }) => {
         if (!event.nativeEvent.statisticsMenuClosePrevented) {
             closeStatisticsMenu();
         }
+        if (!event.nativeEvent.castDevicesMenuClosePrevented) {
+            closeCastDevicesMenu();
+        }
 
         closeSideDrawer();
     }, []);
@@ -376,25 +417,89 @@ const Player = ({ urlParams, queryParams }) => {
         event.nativeEvent.immersePrevented = true;
     }, []);
 
-    onFileDrop(CONSTANTS.SUPPORTED_LOCAL_SUBTITLES, async (filename, buffer) => {
-        video.addLocalSubtitles(filename, buffer);
-    });
+    const onPlayPause = React.useCallback(() => {
+        if (!menusOpen && !nextVideoPopupOpen && video.state.paused !== null) {
+            if (video.state.paused) {
+                onPlayRequested();
+                setSeeking(false);
+            } else {
+                onPauseRequested();
+            }
+        }
+    }, [menusOpen, nextVideoPopupOpen, video.state.paused]);
+
+    const onSeekPrev = React.useCallback((event) => {
+        if (!menusOpen && !nextVideoPopupOpen && video.state.time !== null) {
+            const seekDuration = event?.shiftKey ? settings.seekShortTimeDuration : settings.seekTimeDuration;
+            const seekTime = video.state.time - seekDuration;
+            setSeeking(true);
+            onSeekRequested(Math.max(seekTime, 0));
+        }
+    }, [menusOpen, nextVideoPopupOpen, video.state.time]);
+
+    const onSeekNext = React.useCallback((event) => {
+        if (!menusOpen && !nextVideoPopupOpen && video.state.time !== null) {
+            const seekDuration = event?.shiftKey ? settings.seekShortTimeDuration : settings.seekTimeDuration;
+            setSeeking(true);
+            onSeekRequested(video.state.time + seekDuration);
+        }
+    }, [menusOpen, nextVideoPopupOpen, video.state.time]);
+
+    const onVolumeUp = React.useCallback(() => {
+        if (!menusOpen && !nextVideoPopupOpen && video.state.volume !== null) {
+            onVolumeChangeRequested(Math.min(video.state.volume + 5, 200));
+        }
+    }, [menusOpen, nextVideoPopupOpen, video.state.volume]);
+
+    const onVolumeDown = React.useCallback(() => {
+        if (!menusOpen && !nextVideoPopupOpen && video.state.volume !== null) {
+            onVolumeChangeRequested(Math.max(video.state.volume - 5, 0));
+        }
+    }, [menusOpen, nextVideoPopupOpen, video.state.volume]);
+
+    const onGamepadSeekAndVol = React.useCallback((axis) => {
+        switch(axis) {
+            case 'left': {
+                onSeekPrev();
+                break;
+            }
+            case 'right': {
+                onSeekNext();
+                break;
+            }
+            case 'up': {
+                onVolumeUp();
+                break;
+            }
+            case 'down': {
+                onVolumeDown();
+                break;
+            }
+        }
+    }, [onSeekPrev, onSeekNext, onVolumeUp, onVolumeDown]);
+
+    useContentGamepadNavigation(playerRef, GAMEPAD_HANDLER_ID);
+
+    React.useEffect(() => {
+        gamepad?.on('buttonX', GAMEPAD_HANDLER_ID, onPlayPause);
+        gamepad?.on('analogRight', GAMEPAD_HANDLER_ID, onGamepadSeekAndVol);
+
+        return () => {
+            gamepad?.off('buttonX', GAMEPAD_HANDLER_ID);
+            gamepad?.off('analogRight', GAMEPAD_HANDLER_ID);
+        };
+    }, [onPlayPause, onGamepadSeekAndVol]);
 
     React.useEffect(() => {
         setError(null);
+        cancelKeyboardSeek();
         video.unload();
 
         if (player.selected && player.stream?.type === 'Ready' && streamingServer.settings?.type !== 'Loading') {
             video.load({
                 stream: {
                     ...player.stream.content,
-                    subtitles: Array.isArray(player.selected.stream.subtitles) ?
-                        player.selected.stream.subtitles.map((subtitles) => ({
-                            ...subtitles,
-                            label: subtitles.label || subtitles.url
-                        }))
-                        :
-                        []
+                    subtitles: streamSubtitles
                 },
                 autoplay: true,
                 time: player.libraryItem !== null &&
@@ -408,6 +513,7 @@ const Player = ({ urlParams, queryParams }) => {
                 maxAudioChannels: settings.surroundSound ? 32 : 2,
                 hardwareDecoding: settings.hardwareDecoding,
                 assSubtitlesStyling: settings.assSubtitlesStyling,
+                gpuVideoProcessing: settings.gpuVideoProcessing && platform.shell.capabilities.gpuVideoProcessing,
                 videoMode: settings.videoMode,
                 platform: platform.name,
                 streamingServerURL: streamingServer.baseUrl ?
@@ -420,19 +526,10 @@ const Player = ({ urlParams, queryParams }) => {
                 seriesInfo: player.seriesInfo,
             }, {
                 chromecastTransport: services.chromecast.active ? services.chromecast.transport : null,
-                shellTransport: services.shell.active ? services.shell.transport : null,
+                shellTransport: platform.shell.active ? platform.shell : null,
             });
         }
-    }, [streamingServer.baseUrl, player.selected, player.stream, forceTranscoding, casting]);
-    React.useEffect(() => {
-        if (video.state.stream !== null) {
-            const tracks = player.subtitles.map((subtitles) => ({
-                ...subtitles,
-                label: subtitles.label || subtitles.url
-            }));
-            video.addExtraSubtitlesTracks(tracks);
-        }
-    }, [player.subtitles, video.state.stream]);
+    }, [streamingServer.baseUrl, player.selected, player.stream, streamSubtitles, forceTranscoding, casting, cancelKeyboardSeek]);
 
     React.useEffect(() => {
         !seeking && timeChanged(video.state.time, video.state.duration, video.state.manifest?.name);
@@ -458,63 +555,14 @@ const Player = ({ urlParams, queryParams }) => {
                 closeNextVideoPopup();
             }
         }
-        if (player.nextVideo) {
-            // This is a workaround for the fact that when we call onEnded nextVideo from the player is already set to null since core unloads the stream
-            // we explicitly set it to a global variable so we can access it in the onEnded function
-            // this is not a good solution but it works for now
-            window.playerNextVideo = player.nextVideo;
-        } else {
-            window.playerNextVideo = null;
-        }
     }, [player.nextVideo, video.state.time, video.state.duration]);
-
-    // Auto subtitles track selection
-    React.useEffect(() => {
-        if (!defaultSubtitlesSelected.current) {
-            if (settings.subtitlesLanguage === null) {
-                video.setSubtitlesTrack(null);
-                video.setExtraSubtitlesTrack(null);
-                defaultSubtitlesSelected.current = true;
-                return;
-            }
-
-            const savedTrackId = player.streamState?.subtitleTrack?.id;
-            const savedLang = player.streamState?.subtitleTrack?.lang;
-            const savedIsExternal = savedTrackId && player.streamState?.subtitleTrack?.embedded === false;
-
-            const subtitlesTrack =
-                savedTrackId ? findTrackById(video.state.subtitlesTracks, savedTrackId) :
-                    savedLang ? findTrackByLang(video.state.subtitlesTracks, savedLang) :
-                        findTrackByLang(video.state.subtitlesTracks, settings.subtitlesLanguage);
-
-            const extraSubtitlesTrack =
-                savedTrackId ? findTrackById(video.state.extraSubtitlesTracks, savedTrackId) :
-                    savedLang ? findTrackByLang(video.state.extraSubtitlesTracks, savedLang) :
-                        findTrackByLang(video.state.extraSubtitlesTracks, settings.subtitlesLanguage);
-
-            if (subtitlesTrack && subtitlesTrack.id) {
-                if (video.state.selectedSubtitlesTrackId !== subtitlesTrack.id) {
-                    video.setSubtitlesTrack(subtitlesTrack.id);
-                }
-                defaultSubtitlesSelected.current = true;
-            } else if (extraSubtitlesTrack && extraSubtitlesTrack.id) {
-                if (video.state.selectedExtraSubtitlesTrackId !== extraSubtitlesTrack.id) {
-                    video.setExtraSubtitlesTrack(extraSubtitlesTrack.id);
-                }
-                if (savedIsExternal) {
-                    defaultSubtitlesSelected.current = true;
-                }
-            }
-        }
-    }, [video.state.subtitlesTracks, video.state.extraSubtitlesTracks, video.state.selectedSubtitlesTrackId, video.state.selectedExtraSubtitlesTrackId, player.streamState]);
 
     // Auto audio track selection
     React.useEffect(() => {
         if (!defaultAudioTrackSelected.current) {
             const savedTrackId = player.streamState?.audioTrack?.id;
-            const audioTrack = savedTrackId ?
-                findTrackById(video.state.audioTracks, savedTrackId) :
-                findTrackByLang(video.state.audioTracks, settings.audioLanguage);
+            const savedTrack = savedTrackId ? findTrackById(video.state.audioTracks, savedTrackId) : null;
+            const audioTrack = savedTrack ?? findTrackByLang(video.state.audioTracks, settings.audioLanguage);
 
             if (audioTrack && audioTrack.id) {
                 video.setAudioTrack(audioTrack.id);
@@ -523,43 +571,11 @@ const Player = ({ urlParams, queryParams }) => {
         }
     }, [video.state.audioTracks, player.streamState]);
 
-    // Saved subtitles settings
     React.useEffect(() => {
-        if (video.state.stream !== null) {
-            const delay = player.streamState?.subtitleDelay;
-            if (typeof delay === 'number') {
-                video.setSubtitlesDelay(delay);
-            }
-
-            const size = player.streamState?.subtitleSize;
-            if (typeof size === 'number') {
-                video.setSubtitlesSize(size);
-            }
-
-            const offset = player.streamState?.subtitleOffset;
-            if (typeof offset === 'number') {
-                video.setSubtitlesOffset(offset);
-            }
-        }
-    }, [video.state.stream, player.streamState]);
-
-    React.useEffect(() => {
-        defaultSubtitlesSelected.current = false;
         defaultAudioTrackSelected.current = false;
-        lastSubtitleTrack.current = null;
         nextVideoPopupDismissed.current = false;
         playingOnExternalDevice.current = false;
-        // we need a timeout here to make sure that previous page unloads and the new one loads
-        // avoiding race conditions and flickering
-        setTimeout(() => isNavigating.current = false, 1000);
     }, [video.state.stream]);
-
-    React.useEffect(() => {
-        if ((!Array.isArray(video.state.subtitlesTracks) || video.state.subtitlesTracks.length === 0) &&
-            (!Array.isArray(video.state.extraSubtitlesTracks) || video.state.extraSubtitlesTracks.length === 0)) {
-            closeSubtitlesMenu();
-        }
-    }, [video.state.subtitlesTracks, video.state.extraSubtitlesTracks]);
 
     React.useEffect(() => {
         if (!Array.isArray(video.state.audioTracks) || video.state.audioTracks.length === 0) {
@@ -588,19 +604,19 @@ const Player = ({ urlParams, queryParams }) => {
                 );
             }
         };
-        const onCoreEvent = ({ event }) => {
-            if (event === 'PlayingOnDevice') {
+        const onCoreEvent = (name) => {
+            if (name === 'PlayingOnDevice') {
                 playingOnExternalDevice.current = true;
                 onPauseRequested();
             }
         };
         services.chromecast.on('stateChanged', onChromecastServiceStateChange);
-        services.core.transport.on('CoreEvent', onCoreEvent);
+        core.on('event', onCoreEvent);
         onChromecastServiceStateChange();
         return () => {
             toast.removeFilter(toastFilter);
             services.chromecast.off('stateChanged', onChromecastServiceStateChange);
-            services.core.transport.off('CoreEvent', onCoreEvent);
+            core.off('event', onCoreEvent);
             if (services.chromecast.active) {
                 services.chromecast.transport.off(
                     cast.framework.CastContextEventType.CAST_STATE_CHANGED,
@@ -611,18 +627,53 @@ const Player = ({ urlParams, queryParams }) => {
     }, []);
 
     React.useEffect(() => {
-        if (settings.pauseOnMinimize && (shell.windowClosed || shell.windowHidden)) {
+        if (settings.pauseOnMinimize && (platform.shell.state.windowClosed || platform.shell.state.windowHidden)) {
             onPauseRequested();
         }
-    }, [settings.pauseOnMinimize, shell.windowClosed, shell.windowHidden]);
+    }, [settings.pauseOnMinimize, platform.shell.state.windowClosed, platform.shell.state.windowHidden]);
 
-    useMediaSession(video.state, player, onPlayRequested, onPauseRequested, onNextVideoRequested);
+    React.useEffect(() => {
+        if (video.state.stream === null || typeof player?.title !== 'string') {
+            discordTimestamps.current = EMPTY_DISCORD_TIMESTAMPS;
+            discord.setActivity(null);
+            return;
+        }
+
+        const metaItem = player.metaItem?.type === 'Ready' ? player.metaItem.content : null;
+        const { activity, timestamps } = getPlaybackDiscordActivity({
+            title: player.title,
+            image: metaItem?.poster || metaItem?.background || null,
+            paused: video.state.paused,
+            time: video.state.time,
+            duration: video.state.duration,
+            timestamps: discordTimestamps.current,
+        });
+
+        discordTimestamps.current = timestamps;
+        discord.setActivity(activity);
+    }, [discord.setActivity, player?.title, player.metaItem, video.state.duration, video.state.paused, video.state.stream, video.state.time]);
+
+    React.useEffect(() => {
+        return () => {
+            discord.setActivity(null);
+        };
+    }, [discord.setActivity]);
+
+    useMediaSession(video.state, player, fullscreen, onPlayRequested, onPauseRequested, onNextVideoRequested);
 
     React.useEffect(() => {
         const onMediaKey = (action) => {
             switch (action) {
                 case 'play-pause':
-                    video.state.paused ? onPlayRequested() : onPauseRequested();
+                    if (video.state.paused !== null) {
+                        video.state.paused ? onPlayRequested() : onPauseRequested();
+                    }
+                    break;
+                case 'play':
+                    onPlayRequested();
+                    break;
+                case 'pause':
+                    onPauseRequested();
                     break;
                 case 'next-track':
                     if (player.nextVideo !== null) {
@@ -630,82 +681,32 @@ const Player = ({ urlParams, queryParams }) => {
                         onNextVideoRequested();
                     }
                     break;
-                case 'previous-track':
-                    if (video.state.time !== null && video.state.time > 5000) {
-                        onSeekRequested(0);
-                    }
-                    break;
             }
         };
-        shell.on('media-key', onMediaKey);
-        return () => shell.off('media-key', onMediaKey);
-    }, [video.state.paused, video.state.time, player.nextVideo, onPlayRequested, onPauseRequested, onNextVideoRequested, onSeekRequested]);
+        platform.shell.on('media-key', onMediaKey);
+        return () => platform.shell.off('media-key', onMediaKey);
+    }, [video.state.paused, player.nextVideo, onPlayRequested, onPauseRequested, onNextVideoRequested]);
 
     onShortcut('seekForward', (combo) => {
-        if (video.state.time !== null) {
-            const seekDuration = combo === 1 ? settings.seekShortTimeDuration : settings.seekTimeDuration;
-            setSeeking(true);
-            onSeekRequested(video.state.time + seekDuration);
-        }
-    }, [video.state.time, onSeekRequested], !menusOpen);
+        const seekDuration = combo === 1 ? settings.seekShortTimeDuration : settings.seekTimeDuration;
+        onKeyboardSeekRequested(seekDuration);
+    }, [settings.seekShortTimeDuration, settings.seekTimeDuration, onKeyboardSeekRequested], !menusOpen);
 
     onShortcut('seekBackward', (combo) => {
-        if (video.state.time !== null) {
-            const seekDuration = combo === 1 ? settings.seekShortTimeDuration : settings.seekTimeDuration;
-            setSeeking(true);
-            onSeekRequested(video.state.time - seekDuration);
-        }
-    }, [video.state.time, onSeekRequested], !menusOpen);
+        const seekDuration = combo === 1 ? settings.seekShortTimeDuration : settings.seekTimeDuration;
+        onKeyboardSeekRequested(-seekDuration);
+    }, [settings.seekShortTimeDuration, settings.seekTimeDuration, onKeyboardSeekRequested], !menusOpen);
 
     onShortcut('mute', () => {
         video.state.muted === true ? onUnmuteRequested() : onMuteRequested();
     }, [video.state.muted], !menusOpen);
 
-    onShortcut('volumeUp', () => {
+    onShortcut('volume', (combo) => {
         if (video.state.volume !== null) {
-            onVolumeChangeRequested(Math.min(video.state.volume + 5, 200));
+            const volume = combo === 0 ? Math.min(video.state.volume + 5, 200) : Math.max(video.state.volume - 5, 0);
+            onVolumeChangeRequested(volume);
         }
     }, [video.state.volume], !menusOpen);
-
-    onShortcut('volumeDown', () => {
-        if (video.state.volume !== null) {
-            onVolumeChangeRequested(Math.max(video.state.volume - 5, 0));
-        }
-    }, [video.state.volume], !menusOpen);
-
-    onShortcut('subtitlesDelay', (combo) => {
-        combo === 1 ? onIncreaseSubtitlesDelay() : onDecreaseSubtitlesDelay();
-    }, [onIncreaseSubtitlesDelay, onDecreaseSubtitlesDelay], !menusOpen);
-
-    onShortcut('subtitlesSize', (combo) => {
-        combo === 1 ? onUpdateSubtitlesSize(1) : onUpdateSubtitlesSize(-1);
-    }, [onUpdateSubtitlesSize, onUpdateSubtitlesSize], !menusOpen);
-
-    onShortcut('toggleSubtitles', () => {
-        const isEnabled = video.state.selectedSubtitlesTrackId !== null || video.state.selectedExtraSubtitlesTrackId !== null;
-
-        if (isEnabled) {
-            if (video.state.selectedSubtitlesTrackId) {
-                lastSubtitleTrack.current = { id: video.state.selectedSubtitlesTrackId, embedded: true };
-            } else if (video.state.selectedExtraSubtitlesTrackId) {
-                lastSubtitleTrack.current = { id: video.state.selectedExtraSubtitlesTrackId, embedded: false };
-            }
-            video.setSubtitlesTrack(null);
-            video.setExtraSubtitlesTrack(null);
-        } else {
-            const savedTrack = player.streamState?.subtitleTrack ?? lastSubtitleTrack.current;
-            if (savedTrack?.id) {
-                savedTrack.embedded ? video.setSubtitlesTrack(savedTrack.id) : video.setExtraSubtitlesTrack(savedTrack.id);
-            }
-        }
-    }, [player.streamState, video.state.selectedSubtitlesTrackId, video.state.selectedExtraSubtitlesTrackId], !menusOpen);
-
-    onShortcut('subtitlesMenu', () => {
-        closeMenus();
-        if (video.state?.subtitlesTracks?.length > 0 || video.state?.extraSubtitlesTracks?.length > 0) {
-            toggleSubtitlesMenu();
-        }
-    }, [video.state.subtitlesTracks, video.state.extraSubtitlesTracks, toggleSubtitlesMenu]);
 
     onShortcut('audioMenu', () => {
         closeMenus();
@@ -728,41 +729,80 @@ const Player = ({ urlParams, queryParams }) => {
         }
     }, [video.state.playbackSpeed, toggleSpeedMenu]);
 
-    onShortcut('speedUp', () => {
+    onShortcut('speed', (combo) => {
         if (video.state.playbackSpeed !== null) {
-            onPlaybackSpeedChanged(Math.min(video.state.playbackSpeed + 0.25, 2));
+            const speed = combo === 0 ? Math.max(video.state.playbackSpeed - 0.25, 0.25) : Math.min(video.state.playbackSpeed + 0.25, 2);
+            onPlaybackSpeedChanged(speed);
         }
     }, [video.state.playbackSpeed, onPlaybackSpeedChanged], !menusOpen);
 
-    onShortcut('speedDown', () => {
-        if (video.state.playbackSpeed !== null) {
-            onPlaybackSpeedChanged(Math.max(video.state.playbackSpeed - 0.25, 0.25));
-        }
-    }, [video.state.playbackSpeed, onPlaybackSpeedChanged], !menusOpen);
+    const selectedStream = player.selected?.stream;
+    const statisticsMenuAvailable = streamingServer?.statistics?.type !== 'Err'
+        && typeof selectedStream?.infoHash === 'string'
+        && typeof selectedStream?.fileIdx === 'number';
 
-    onShortcut('statisticsMenu', () => {
+    const finishDetailsHold = React.useCallback(() => {
+        const hold = detailsHold.current;
+        if (hold === null) return null;
+
+        detailsHold.current = null;
+        if (hold.phase === 'pending') {
+            clearTimeout(hold.timer);
+        } else {
+            closeStatisticsMenu();
+        }
+        return hold.phase;
+    }, [closeStatisticsMenu]);
+
+    const releaseDetailsHold = React.useCallback(() => {
+        if (finishDetailsHold() !== 'pending') return;
+
         closeMenus();
-        const stream = player.selected?.stream;
-        if (streamingServer?.statistics?.type !== 'Err' && typeof stream?.infoHash === 'string' && typeof stream?.fileIdx === 'number') {
+        if (statisticsMenuAvailable) {
             toggleStatisticsMenu();
         }
-    }, [player.selected, streamingServer.statistics, toggleStatisticsMenu]);
+    }, [finishDetailsHold, closeMenus, statisticsMenuAvailable, toggleStatisticsMenu]);
+
+    onShortcut('statisticsMenu', () => {
+        if (detailsHold.current !== null || pressTimer.current !== null) return;
+
+        const hold = { phase: 'pending', timer: null };
+        hold.timer = setTimeout(() => {
+            hold.phase = 'held';
+            hold.timer = null;
+            if (statisticsMenuAvailable) {
+                closeMenus();
+                openStatisticsMenu();
+            }
+        }, HOLD_DELAY);
+        detailsHold.current = hold;
+    }, [statisticsMenuAvailable, closeMenus, openStatisticsMenu], routeFocused);
 
     onShortcut('playNext', () => {
         closeMenus();
-        if (window.playerNextVideo !== null) {
+        if (player.nextVideo !== null) {
             nextVideo();
-            const deepLinks = window.playerNextVideo.deepLinks;
+            const deepLinks = player.nextVideo.deepLinks;
             handleNextVideoNavigation(deepLinks, false, false);
         }
-    }, []);
+    }, [player.nextVideo, handleNextVideoNavigation]);
 
     onShortcut('exit', () => {
         closeMenus();
-        !settings.escExitFullscreen && window.history.back();
-    }, [settings.escExitFullscreen]);
+        // When escExitFullscreen is enabled, FullscreenProvider handles the first
+        // Escape press by leaving fullscreen. Only skip navigating back in that case,
+        // otherwise Escape would never exit the player in windowed mode.
+        if (settings.escExitFullscreen && fullscreen) {
+            return;
+        }
+        navigate(-1);
+    }, [settings.escExitFullscreen, fullscreen]);
 
     React.useLayoutEffect(() => {
+        if (!routeFocused) {
+            finishDetailsHold();
+        }
+
         if (menusOpen) {
             clearTimeout(pressTimer.current);
             pressTimer.current = null;
@@ -770,8 +810,9 @@ const Player = ({ urlParams, queryParams }) => {
         }
 
         const onKeyDown = (e) => {
-            if (e.code !== 'Space' || e.repeat) return;
-            if (menusOpen) return;
+            const keyboardKey = getKeyboardShortcutKey(e);
+            if (keyboardKey !== 'Space' || e.repeat) return;
+            if (menusOpen || detailsHold.current !== null || e.ctrlKey || e.metaKey || e.altKey) return;
 
             longPress.current = false;
 
@@ -782,13 +823,23 @@ const Player = ({ urlParams, queryParams }) => {
         };
 
         const onKeyUp = (e) => {
-            if (e.code !== 'Space' && e.code !== 'ArrowRight' && e.code !== 'ArrowLeft') return;
+            const keyboardKeys = getKeyboardShortcutKeys(e);
 
-            if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
-                setSeeking(false);
+            if (keyboardKeys.includes('KeyD') || keyboardKeys.includes('D')) {
+                releaseDetailsHold();
                 return;
             }
-            if (e.code === 'Space') {
+
+            if (!keyboardKeys.includes('Space') && !keyboardKeys.includes('ArrowRight') && !keyboardKeys.includes('ArrowLeft')) return;
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+            if (keyboardKeys.includes('ArrowRight') || keyboardKeys.includes('ArrowLeft')) {
+                releaseKeyboardSeek();
+                setImmersed(false);
+                setImmersedDebounced(true);
+                return;
+            }
+            if (keyboardKeys.includes('Space')) {
                 clearTimeout(pressTimer.current);
                 pressTimer.current = null;
                 if (longPress.current) {
@@ -819,7 +870,7 @@ const Player = ({ urlParams, queryParams }) => {
 
         const onMouseDownHold = (e) => {
             if (e.button !== 0) return; // left mouse button only
-            if (menusOpen) return;
+            if (menusOpen || detailsHold.current !== null) return;
             if (controlBarRef.current && controlBarRef.current.contains(e.target)) return;
 
             longPress.current = false;
@@ -834,6 +885,7 @@ const Player = ({ urlParams, queryParams }) => {
             if (e.button !== 0) return;
 
             clearTimeout(pressTimer.current);
+            pressTimer.current = null;
 
             if (longPress.current) {
                 onPlaybackSpeedChanged(playbackSpeed.current);
@@ -847,7 +899,10 @@ const Player = ({ urlParams, queryParams }) => {
                 onPlaybackSpeedChanged(playbackSpeed.current);
                 longPress.current = false;
             }
-            setSeeking(false);
+            finishDetailsHold();
+            flushKeyboardSeek();
+            setImmersed(false);
+            setImmersedDebounced(true);
         };
 
         if (routeFocused) {
@@ -857,6 +912,8 @@ const Player = ({ urlParams, queryParams }) => {
             window.addEventListener('mousedown', onMouseDownHold);
             window.addEventListener('mouseup', onMouseUp);
             window.addEventListener('blur', onBlur);
+        } else {
+            cancelKeyboardSeek();
         }
         return () => {
             window.removeEventListener('keyup', onKeyUp);
@@ -866,28 +923,21 @@ const Player = ({ urlParams, queryParams }) => {
             window.removeEventListener('mouseup', onMouseUp);
             window.removeEventListener('blur', onBlur);
         };
-    }, [routeFocused, menusOpen, video.state.volume, video.state.paused]);
+    }, [routeFocused, menusOpen, video.state.volume, video.state.paused, finishDetailsHold, releaseDetailsHold, cancelKeyboardSeek, flushKeyboardSeek, releaseKeyboardSeek]);
 
     React.useEffect(() => {
         video.events.on('error', onError);
         video.events.on('ended', onEnded);
-        video.events.on('subtitlesTrackLoaded', onSubtitlesTrackLoaded);
-        video.events.on('extraSubtitlesTrackLoaded', onExtraSubtitlesTrackLoaded);
-        video.events.on('extraSubtitlesTrackAdded', onExtraSubtitlesTrackAdded);
-        video.events.on('implementationChanged', onImplementationChanged);
 
         return () => {
             video.events.off('error', onError);
             video.events.off('ended', onEnded);
-            video.events.off('subtitlesTrackLoaded', onSubtitlesTrackLoaded);
-            video.events.off('extraSubtitlesTrackLoaded', onExtraSubtitlesTrackLoaded);
-            video.events.off('extraSubtitlesTrackAdded', onExtraSubtitlesTrackAdded);
-            video.events.off('implementationChanged', onImplementationChanged);
         };
-    }, []);
+    }, [onEnded]);
 
     React.useLayoutEffect(() => {
         return () => {
+            clearTimeout(detailsHold.current?.timer);
             setImmersedDebounced.cancel();
             onPlayRequestedDebounced.cancel();
             onPauseRequestedDebounced.cancel();
@@ -895,7 +945,7 @@ const Player = ({ urlParams, queryParams }) => {
     }, []);
 
     return (
-        <div className={classnames(styles['player-container'], { [styles['overlayHidden']]: overlayHidden })}
+        <div ref={playerRef} className={classnames(styles['player-container'], { [styles['overlayHidden']]: overlayHidden })}
             onMouseDown={onContainerMouseDown}
             onMouseMove={onContainerMouseMove}
             onMouseOver={onContainerMouseMove}
@@ -916,10 +966,11 @@ const Player = ({ urlParams, queryParams }) => {
             }
             {
                 (video.state.buffering || !video.state.loaded) && !error ?
-                    <BufferingLoader
+                    <Buffering
                         ref={bufferingRef}
                         className={classnames(styles['layer'], styles['buffering-layer'])}
                         logo={player?.metaItem?.content?.logo}
+                        progress={statistics.progress}
                     />
                     :
                     null
@@ -955,8 +1006,8 @@ const Player = ({ urlParams, queryParams }) => {
                     className={classnames(styles['layer'], styles['menu-layer'])}
                     stream={player?.selected?.stream}
                     playbackDevices={playbackDevices}
-                    extraSubtitlesTracks={video.state.extraSubtitlesTracks}
-                    selectedExtraSubtitlesTrackId={video.state.selectedExtraSubtitlesTrackId}
+                    extraSubtitlesTracks={extraSubtitleTracks}
+                    selectedExtraSubtitlesTrackId={selectedExtraSubtitleTrackId}
                 />
             </ContextMenu>
             <HorizontalNavBar
@@ -981,18 +1032,18 @@ const Player = ({ urlParams, queryParams }) => {
                 ref={controlBarRef}
                 className={classnames(styles['layer'], styles['control-bar-layer'])}
                 paused={video.state.paused}
-                time={video.state.time}
+                time={keyboardSeekTime ?? video.state.time}
                 duration={video.state.duration}
                 buffered={video.state.buffered}
                 volume={video.state.volume}
                 muted={video.state.muted}
                 playbackSpeed={video.state.playbackSpeed}
-                subtitlesTracks={video.state.subtitlesTracks.concat(video.state.extraSubtitlesTracks)}
+                subtitlesTracks={allSubtitleTracks}
                 audioTracks={video.state.audioTracks}
                 metaItem={player.metaItem}
                 nextVideo={player.nextVideo}
                 stream={player.selected !== null ? player.selected.stream : null}
-                statistics={statistics}
+                statisticsAvailable={statisticsMenuAvailable}
                 onPlayRequested={onPlayRequested}
                 onPauseRequested={onPauseRequested}
                 onNextVideoRequested={onNextVideoRequested}
@@ -1001,6 +1052,8 @@ const Player = ({ urlParams, queryParams }) => {
                 onVolumeChangeRequested={onVolumeChangeRequested}
                 onSeekRequested={onSeekRequested}
                 onToggleOptionsMenu={toggleOptionsMenu}
+                shellCastSupported={shellCastSupported}
+                onToggleCastDevicesMenu={toggleCastDevicesMenu}
                 onToggleSubtitlesMenu={toggleSubtitlesMenu}
                 onToggleAudioMenu={toggleAudioMenu}
                 onToggleSpeedMenu={toggleSpeedMenu}
@@ -1036,36 +1089,27 @@ const Player = ({ urlParams, queryParams }) => {
                     {...statistics}
                 />
             </Transition>
+            <Transition when={castDevicesMenuOpen} name={'fade'}>
+                <CastDevicesMenu
+                    className={classnames(styles['layer'], styles['menu-layer'])}
+                    devices={castDevices}
+                    loading={castDevicesLoading}
+                    onDeviceSelected={onCastDeviceSelected}
+                />
+            </Transition>
             <Transition when={sideDrawerOpen} name={'slide-left'}>
                 <SideDrawer
                     className={classnames(styles['layer'], styles['side-drawer-layer'])}
                     metaItem={player.metaItem?.content}
                     seriesInfo={player.seriesInfo}
                     closeSideDrawer={closeSideDrawer}
-                    selected={player.selected?.streamRequest?.path.id}
+                    selected={player.selected?.streamRequest?.path?.id}
                 />
             </Transition>
             <Transition when={subtitlesMenuOpen} name={'fade'}>
                 <SubtitlesMenu
                     className={classnames(styles['layer'], styles['menu-layer'])}
-                    subtitlesLanguage={settings.subtitlesLanguage}
-                    interfaceLanguage={settings.interfaceLanguage}
-                    subtitlesTracks={video.state.subtitlesTracks}
-                    selectedSubtitlesTrackId={video.state.selectedSubtitlesTrackId}
-                    subtitlesOffset={video.state.subtitlesOffset}
-                    subtitlesSize={video.state.subtitlesSize}
-                    extraSubtitlesTracks={video.state.extraSubtitlesTracks}
-                    selectedExtraSubtitlesTrackId={video.state.selectedExtraSubtitlesTrackId}
-                    extraSubtitlesOffset={video.state.extraSubtitlesOffset}
-                    extraSubtitlesDelay={video.state.extraSubtitlesDelay}
-                    extraSubtitlesSize={video.state.extraSubtitlesSize}
-                    onSubtitlesTrackSelected={onSubtitlesTrackSelected}
-                    onExtraSubtitlesTrackSelected={onExtraSubtitlesTrackSelected}
-                    onSubtitlesOffsetChanged={onSubtitlesOffsetChanged}
-                    onSubtitlesSizeChanged={onSubtitlesSizeChanged}
-                    onExtraSubtitlesOffsetChanged={onSubtitlesOffsetChanged}
-                    onExtraSubtitlesDelayChanged={onExtraSubtitlesDelayChanged}
-                    onExtraSubtitlesSizeChanged={onSubtitlesSizeChanged}
+                    {...subtitlesMenuProps}
                 />
             </Transition>
             <Transition when={audioMenuOpen} name={'fade'}>
@@ -1088,24 +1132,12 @@ const Player = ({ urlParams, queryParams }) => {
                     className={classnames(styles['layer'], styles['menu-layer'])}
                     stream={player.selected?.stream}
                     playbackDevices={playbackDevices}
-                    extraSubtitlesTracks={video.state.extraSubtitlesTracks}
-                    selectedExtraSubtitlesTrackId={video.state.selectedExtraSubtitlesTrackId}
+                    extraSubtitlesTracks={extraSubtitleTracks}
+                    selectedExtraSubtitlesTrackId={selectedExtraSubtitleTrackId}
                 />
             </Transition>
         </div>
     );
-};
-
-Player.propTypes = {
-    urlParams: PropTypes.shape({
-        stream: PropTypes.string,
-        streamTransportUrl: PropTypes.string,
-        metaTransportUrl: PropTypes.string,
-        type: PropTypes.string,
-        id: PropTypes.string,
-        videoId: PropTypes.string
-    }),
-    queryParams: PropTypes.instanceOf(URLSearchParams)
 };
 
 const PlayerFallback = () => (
