@@ -1,6 +1,6 @@
 # the node version for running Stremio Web
 ARG NODE_VERSION=22-alpine
-ARG PNPM_VERSION=10.18.3
+ARG PNPM_VERSION=11.24.0
 ARG COMMIT_HASH=local
 FROM node:$NODE_VERSION AS base
 ARG PNPM_VERSION
